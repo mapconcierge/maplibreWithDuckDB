@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MapLibre + DuckDB-Wasm Spatial Demo</title>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div id="app">
+    <div id="map" aria-label="Interactive world map"></div>
+    <section id="panel" aria-live="polite">
+      <p id="status">Initializing map and DuckDB-Wasm...</p>
+      <pre id="results">Waiting for query results...</pre>
+    </section>
+  </div>
+
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
