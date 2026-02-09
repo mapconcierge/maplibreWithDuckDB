@@ -52,6 +52,11 @@
       return "geojson";
     }
 
+    function isGeoJSONName(name = "") {
+      const lower = name.toLowerCase();
+      return lower.endsWith(".geojson") || lower.endsWith(".json");
+    }
+
     function createLayerRecord({ name, kind, sourceId, mapLayerIds }) {
       const id = `lyr-${++state.idCounter}`;
       const rec = {
@@ -262,39 +267,52 @@
     async function readVectorWithDuckDB(pathForRead, displayName) {
       if (!state.conn) throw new Error("DuckDB is not initialized.");
 
-      const pathSql = escapeSqlLiteral(pathForRead);
-      const summary = await state.conn.query(`
-        SELECT
-          COUNT(*) AS feature_count,
-          MIN(ST_XMin(geom)) AS minx,
-          MIN(ST_YMin(geom)) AS miny,
-          MAX(ST_XMax(geom)) AS maxx,
-          MAX(ST_YMax(geom)) AS maxy
-        FROM ST_Read('${pathSql}');
-      `);
+      const candidatePaths = pathForRead.startsWith("/")
+        ? [pathForRead]
+        : [pathForRead, `/${pathForRead}`];
+      let lastErr = null;
 
-      const rows = summary.toArray().map((r) => r.toJSON());
-      setOutput({ dataset: displayName, summary: rows[0] || {} });
+      for (const pathCandidate of candidatePaths) {
+        try {
+          const pathSql = escapeSqlLiteral(pathCandidate);
+          const summary = await state.conn.query(`
+            SELECT
+              COUNT(*) AS feature_count,
+              MIN(ST_XMin(geom)) AS minx,
+              MIN(ST_YMin(geom)) AS miny,
+              MAX(ST_XMax(geom)) AS maxx,
+              MAX(ST_YMax(geom)) AS maxy
+            FROM ST_Read('${pathSql}');
+          `);
 
-      const featuresRes = await state.conn.query(`
-        SELECT ST_AsGeoJSON(geom) AS geom_json
-        FROM ST_Read('${pathSql}')
-        LIMIT 50000;
-      `);
+          const rows = summary.toArray().map((r) => r.toJSON());
+          setOutput({ dataset: displayName, summary: rows[0] || {}, path_used: pathCandidate });
 
-      const features = featuresRes.toArray().map((r) => {
-        const obj = r.toJSON();
-        return {
-          type: "Feature",
-          properties: {},
-          geometry: JSON.parse(obj.geom_json)
-        };
-      });
+          const featuresRes = await state.conn.query(`
+            SELECT ST_AsGeoJSON(geom) AS geom_json
+            FROM ST_Read('${pathSql}')
+            LIMIT 50000;
+          `);
 
-      return {
-        type: "FeatureCollection",
-        features
-      };
+          const features = featuresRes.toArray().map((r) => {
+            const obj = r.toJSON();
+            return {
+              type: "Feature",
+              properties: {},
+              geometry: JSON.parse(obj.geom_json)
+            };
+          });
+
+          return {
+            type: "FeatureCollection",
+            features
+          };
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+
+      throw lastErr || new Error("ST_Read failed for all path candidates.");
     }
 
     async function registerUploadFiles(files) {
@@ -309,7 +327,33 @@
       return shp ? shp.name : null;
     }
 
+    async function readGeoJSONFileDirect(file) {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      if (!data || typeof data !== "object") {
+        throw new Error("GeoJSON parse returned invalid object.");
+      }
+      if (!data.type) {
+        throw new Error("GeoJSON is missing top-level type.");
+      }
+      return data;
+    }
+
     async function addVectorFromFiles(files, desiredName) {
+      const geojsonFile = files.find((f) => isGeoJSONName(f.name));
+      if (geojsonFile) {
+        const geojson = await readGeoJSONFileDirect(geojsonFile);
+        addGeoJSONToMap(geojson, desiredName || geojsonFile.name);
+        const featureCount = Array.isArray(geojson.features) ? geojson.features.length : null;
+        setOutput({
+          dataset: desiredName || geojsonFile.name,
+          method: "direct_geojson_parse",
+          feature_count: featureCount
+        });
+        setStatus(`Loaded GeoJSON file: ${desiredName || geojsonFile.name}`, "ok");
+        return;
+      }
+
       await registerUploadFiles(files);
       const shpMain = getShapefileMain(files);
       const primary = shpMain || files[0].name;
